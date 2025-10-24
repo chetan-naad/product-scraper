@@ -1,0 +1,17 @@
+requests
+beautifulsoup4
+fake-useragent
+schedule
+pandas
+lxml
+python-dotenv
+streamlit
+plotly
+scikit-learn
+twilio
+python-telegram-bot
+gspread
+oauth2client
+forex-python
+selenium
+cloudscraper

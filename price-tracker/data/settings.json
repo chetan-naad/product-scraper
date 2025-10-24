@@ -1,0 +1,10 @@
+{
+    "email_address": "naadchetan@gmail.com",
+    "telegram_token": "",
+    "telegram_enabled": false,
+    "alert_freq": 6,
+    "price_threshold": 10,
+    "username": "chetan",
+    "currency": "USD",
+    "timezone": "IST"
+}
