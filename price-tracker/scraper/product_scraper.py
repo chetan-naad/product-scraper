@@ -1,60 +1,61 @@
 """
-Product scraper for extracting price information from websites
+Product scraper for extracting price and image information from websites
 """
 import requests
 from bs4 import BeautifulSoup
 import time
 import re
-from typing import Optional, Dict, List
-from urllib.parse import urljoin, urlparse
+from typing import Optional, Dict
+from urllib.parse import urlparse
 import logging
-
-# Import our user agent manager
-try:
-    from utils.user_agents import user_agent_manager
-except ImportError:
-    # Fallback if running standalone
-    class UserAgentManager:
-        def get_random_ua(self):
-            return "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-    user_agent_manager = UserAgentManager()
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Try to import Selenium
+try:
+    from selenium import webdriver
+    from selenium.webdriver.chrome.service import Service
+    from selenium.webdriver.chrome.options import Options
+    from selenium.webdriver.common.by import By
+    from selenium.webdriver.support.ui import WebDriverWait
+    from selenium.webdriver.support import expected_conditions as EC
+    from webdriver_manager.chrome import ChromeDriverManager
+    SELENIUM_AVAILABLE = True
+    logger.info("✅ Selenium is available for Meesho/Myntra scraping")
+except ImportError:
+    SELENIUM_AVAILABLE = False
+    logger.warning("⚠️ Selenium not available - Meesho/Myntra won't work")
 
 class ProductScraper:
     """Scrapes product information from e-commerce websites"""
 
     def __init__(self):
         self.session = requests.Session()
-        self.timeout = 10
+        self.timeout = 15
         self.retry_attempts = 3
         self.delay_between_requests = 2
 
     def scrape_product(self, url: str) -> Optional[Dict]:
-        """
-        Scrape product information from URL
-
-        Args:
-            url: Product page URL
-
-        Returns:
-            Dictionary with product_name, price, site, availability
-        """
+        """Scrape product information from URL"""
+        site = self._identify_site(url)
+        logger.info(f"🔍 Starting to scrape {site} product: {url}")
+        
+        # Use Selenium for JavaScript sites
+        if site in ['meesho', 'myntra'] and SELENIUM_AVAILABLE:
+            logger.info(f"🌐 Using Selenium for {site}")
+            return self._scrape_with_selenium(url, site)
+        
+        # Use regular scraper for other sites
         for attempt in range(self.retry_attempts):
             try:
-                # Determine site type
-                site = self._identify_site(url)
-
-                # Get page content
                 headers = self._get_headers()
+                logger.info(f"Attempt {attempt + 1}: Scraping {site} - {url}")
                 response = self.session.get(url, headers=headers, timeout=self.timeout)
                 response.raise_for_status()
 
-                # Parse HTML
                 soup = BeautifulSoup(response.content, 'html.parser')
 
-                # Extract product information based on site
                 if site == 'amazon':
                     product_info = self._scrape_amazon(soup, url)
                 elif site == 'flipkart':
@@ -64,328 +65,276 @@ class ProductScraper:
                 else:
                     product_info = self._scrape_generic(soup, url)
 
-                if product_info:
+                if product_info and product_info.get('name') and product_info.get('price'):
                     product_info['site'] = site
-                    logger.info(f"Successfully scraped: {product_info['name']}")
+                    logger.info(f"✅ Successfully scraped: {product_info['name']} - ₹{product_info['price']}")
                     return product_info
                 else:
-                    logger.warning(f"Could not extract product info from {url}")
-                    return None
+                    logger.warning(f"⚠️ Attempt {attempt + 1}: Incomplete data - name: {bool(product_info.get('name'))}, price: {bool(product_info.get('price'))}")
 
             except requests.RequestException as e:
-                logger.error(f"Attempt {attempt + 1} failed for {url}: {e}")
+                logger.error(f"❌ Attempt {attempt + 1} failed: {e}")
                 if attempt < self.retry_attempts - 1:
                     time.sleep(self.delay_between_requests)
-                else:
-                    logger.error(f"All attempts failed for {url}")
-                    return None
             except Exception as e:
-                logger.error(f"Unexpected error scraping {url}: {e}")
-                return None
+                logger.error(f"❌ Unexpected error: {e}")
 
+        logger.warning(f"⚠️ All scraping attempts failed for {url}")
         return None
 
-    def _identify_site(self, url: str) -> str:
-        """Identify which e-commerce site this URL belongs to"""
-        domain = urlparse(url).netloc.lower()
+    def _scrape_with_selenium(self, url: str, site: str) -> Optional[Dict]:
+        """Use Selenium for JavaScript-heavy sites"""
+        try:
+            options = Options()
+            options.add_argument('--headless')
+            options.add_argument('--no-sandbox')
+            options.add_argument('--disable-dev-shm-usage')
+            options.add_argument('--disable-gpu')
+            options.add_argument('user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36')
+            
+            driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
+            driver.get(url)
+            
+            # Wait for page to load
+            WebDriverWait(driver, 10).until(
+                EC.presence_of_element_located((By.TAG_NAME, "h1"))
+            )
+            
+            time.sleep(2)  # Extra wait for dynamic content
+            
+            soup = BeautifulSoup(driver.page_source, 'html.parser')
+            driver.quit()
+            
+            # Extract data based on site
+            if site == 'meesho':
+                return self._extract_meesho(soup, url)
+            elif site == 'myntra':
+                return self._extract_myntra(soup, url)
+                
+        except Exception as e:
+            logger.error(f"❌ Selenium scraping failed: {e}")
+            return None
 
+    def _extract_meesho(self, soup: BeautifulSoup, url: str) -> Optional[Dict]:
+        """Extract Meesho data from rendered HTML"""
+        name = None
+        price = None
+        image = None
+
+        # Product name - find longest text element
+        for elem in soup.find_all(['h1', 'h2', 'span', 'p']):
+            text = elem.get_text(strip=True)
+            if len(text) > 10 and len(text) < 200:
+                name = text
+                break
+
+        # Price - search for ₹ symbol
+        for elem in soup.find_all(string=re.compile(r'₹\d+')):
+            price_text = elem.strip()
+            parsed = self._parse_price(price_text)
+            if parsed and parsed > 10:
+                price = parsed
+                break
+
+        # Image
+        img_elem = soup.find('img')
+        if img_elem:
+            image = img_elem.get('src') or img_elem.get('data-src')
+
+        if name and price:
+            logger.info(f"✅ Meesho: {name[:50]}... - ₹{price}")
+            return {'name': name, 'price': price, 'url': url, 'image_url': image, 'availability': 'In Stock'}
+    
+        logger.warning(f"⚠️ Meesho extraction failed: name={bool(name)}, price={bool(price)}")
+        return None
+
+
+    def _extract_myntra(self, soup: BeautifulSoup, url: str) -> Optional[Dict]:
+        name = None
+        price = None
+        image = None
+
+        # Name extraction (already works for you)
+        name_elem = soup.select_one('h1.pdp-title') or soup.select_one('h1.pdp-name') or soup.select_one('h1')
+        if name_elem:
+            name = name_elem.get_text(strip=True)
+    
+        # Price extraction (already works for you)
+        price_elem = soup.select_one('span.pdp-price strong') or soup.select_one('strong.pdp-price') or soup.select_one('span.pdp-price')
+        if price_elem:
+            price = self._parse_price(price_elem.get_text(strip=True))
+    
+        # Image extraction - get first large product image
+        img_elem = None
+    
+        # Myntra main product image often has these classes:
+        img_elem = soup.select_one('img.img-responsive.img-center') or \
+            soup.select_one('div.image-grid-image img') or \
+            soup.select_one('img.pdp-img') or \
+            soup.select_one('img[alt][src]')
+    
+        if img_elem:
+            image = img_elem.get('src')
+    
+        # As ultimate fallback, try og:image meta tag
+        if not image:
+            meta_img = soup.find('meta', {'property': 'og:image'})
+            if meta_img:
+                image = meta_img.get('content')
+    
+        if name and price:
+            logger.info(f"✅ Myntra: {name[:50]}... - ₹{price} | Img: {bool(image)}")
+            return {'name': name, 'price': price, 'url': url, 'image_url': image, 'availability': 'In Stock'}
+        return None
+
+
+    def _identify_site(self, url: str) -> str:
+        """Identify which e-commerce site"""
+        domain = urlparse(url).netloc.lower()
         if 'amazon' in domain:
             return 'amazon'
         elif 'flipkart' in domain:
             return 'flipkart'
         elif 'ebay' in domain:
             return 'ebay'
-        elif 'walmart' in domain:
-            return 'walmart'
+        elif 'meesho' in domain:
+            return 'meesho'
         elif 'myntra' in domain:
             return 'myntra'
         else:
             return 'generic'
 
     def _get_headers(self) -> Dict[str, str]:
-        """Get request headers with rotating user agent"""
+        """Get request headers"""
         return {
-            'User-Agent': user_agent_manager.get_random_ua(),
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
             'Accept-Language': 'en-US,en;q=0.5',
-            'Accept-Encoding': 'gzip, deflate',
             'Connection': 'keep-alive',
-            'Upgrade-Insecure-Requests': '1',
         }
 
-    def _scrape_amazon(self, soup: BeautifulSoup, url: str) -> Optional[Dict]:
-        """Amazon-specific extraction logic"""
-        product_name = None
+    def _scrape_flipkart(self, soup: BeautifulSoup, url: str) -> Optional[Dict]:
+        """Flipkart scraper"""
+        name = None
         price = None
-        availability = "In Stock"
+        image = None
 
-        # Product name
-        name_selectors = [
-            'span#productTitle',
-            'h1.a-size-large',
-            'h1 span'
-        ]
-
+        name_selectors = ['span.VU-ZEz', 'span.B_NuCI', 'h1.yhB1nd']
         for selector in name_selectors:
-            element = soup.select_one(selector)
-            if element:
-                product_name = element.get_text(strip=True)
+            elem = soup.select_one(selector)
+            if elem:
+                name = elem.get_text(strip=True)
                 break
 
-        # Price extraction - Amazon has multiple formats
-        price_selectors = [
-            'span.a-price-whole',
-            'span.a-price.a-text-price.a-size-medium.apexPriceToPay',
-            'span.a-price-range',
-            'span#priceblock_dealprice',
-            'span#priceblock_ourprice',
-            'span.a-offscreen'
-        ]
-
+        price_selectors = ['div.Nx9bqj.CxhGGd', 'div._30jeq3._16Jk6d', 'div._30jeq3']
         for selector in price_selectors:
-            element = soup.select_one(selector)
-            if element:
-                price_text = element.get_text(strip=True)
-                price = self._parse_price(price_text)
+            elem = soup.select_one(selector)
+            if elem:
+                price = self._parse_price(elem.get_text(strip=True))
                 if price:
                     break
 
-        # Availability
-        availability_element = soup.select_one('div#availability span')
-        if availability_element:
-            avail_text = availability_element.get_text(strip=True).lower()
-            if 'out of stock' in avail_text or 'unavailable' in avail_text:
-                availability = "Out of Stock"
+        img_selectors = ['img._53J4C-', 'img._396cs4']
+        for selector in img_selectors:
+            elem = soup.select_one(selector)
+            if elem:
+                image = elem.get('src')
+                break
 
-        if product_name and price:
-            return {
-                'name': product_name,
-                'price': price,
-                'url': url,
-                'availability': availability
-            }
-
+        if name and price:
+            return {'name': name, 'price': price, 'url': url, 'image_url': image, 'availability': 'In Stock'}
         return None
 
-    def _scrape_flipkart(self, soup: BeautifulSoup, url: str) -> Optional[Dict]:
-        """Flipkart-specific extraction logic"""
-        product_name = None
+    def _scrape_amazon(self, soup: BeautifulSoup, url: str) -> Optional[Dict]:
+        """Amazon scraper"""
+        name = None
         price = None
+        image = None
 
-        # Product name
-        name_selectors = [
-            'span.B_NuCI',
-            'h1.x-product-title-label',
-            'span.G6XhBx'
-        ]
+        name_elem = soup.select_one('span#productTitle')
+        if name_elem:
+            name = name_elem.get_text(strip=True)
 
-        for selector in name_selectors:
-            element = soup.select_one(selector)
-            if element:
-                product_name = element.get_text(strip=True)
-                break
+        price_elem = soup.select_one('span.a-price-whole') or soup.select_one('span#priceblock_ourprice')
+        if price_elem:
+            price = self._parse_price(price_elem.get_text())
 
-        # Price
-        price_selectors = [
-            'div._30jeq3._16Jk6d',
-            'div._30jeq3',
-            'div._1_WHN1'
-        ]
+        img_elem = soup.select_one('img#landingImage') or soup.select_one('img.a-dynamic-image')
+        if img_elem:
+            image = img_elem.get('data-old-hires') or img_elem.get('src')
 
-        for selector in price_selectors:
-            element = soup.select_one(selector)
-            if element:
-                price_text = element.get_text(strip=True)
-                price = self._parse_price(price_text)
-                if price:
-                    break
-
-        if product_name and price:
-            return {
-                'name': product_name,
-                'price': price,
-                'url': url,
-                'availability': 'In Stock'
-            }
-
+        if name and price:
+            return {'name': name, 'price': price, 'url': url, 'image_url': image, 'availability': 'In Stock'}
         return None
 
     def _scrape_ebay(self, soup: BeautifulSoup, url: str) -> Optional[Dict]:
-        """eBay-specific extraction logic"""
-        product_name = None
+        """eBay scraper"""
+        name = None
         price = None
+        image = None
 
-        # Product name
-        name_element = soup.select_one('h1#x-title-label-lbl')
-        if name_element:
-            product_name = name_element.get_text(strip=True)
+        name_selectors = ['h1.x-item-title__mainTitle span', 'h1#itemTitle']
+        for selector in name_selectors:
+            elem = soup.select_one(selector)
+            if elem:
+                name = elem.get_text(strip=True).replace('Details about', '').strip()
+                break
 
-        # Price
-        price_selectors = [
-            'span.u-flL.condText',
-            'span.u-flL.secondary',
-            'span#mm-saleDscPrc'
-        ]
-
+        price_selectors = ['div.x-price-primary span.ux-textspans', 'span.x-price-approx__price']
         for selector in price_selectors:
-            element = soup.select_one(selector)
-            if element:
-                price_text = element.get_text(strip=True)
-                price = self._parse_price(price_text)
+            elem = soup.select_one(selector)
+            if elem:
+                price = self._parse_price(elem.get_text(strip=True))
                 if price:
                     break
 
-        if product_name and price:
-            return {
-                'name': product_name,
-                'price': price,
-                'url': url,
-                'availability': 'In Stock'
-            }
+        img_selectors = ['div.ux-image-carousel-item img', 'img#icImg']
+        for selector in img_selectors:
+            elem = soup.select_one(selector)
+            if elem:
+                image = elem.get('src')
+                break
 
+        if name and price:
+            return {'name': name, 'price': price, 'url': url, 'image_url': image, 'availability': 'In Stock'}
         return None
 
     def _scrape_generic(self, soup: BeautifulSoup, url: str) -> Optional[Dict]:
-        """
-        Generic extraction for unknown sites
-        Uses common patterns and meta tags
-        """
-        product_name = None
+        """Generic fallback"""
+        name = None
         price = None
+        image = None
 
-        # Try meta tags for product name
-        meta_name_tags = [
-            ('meta', {'property': 'og:title'}),
-            ('meta', {'name': 'twitter:title'}),
-            ('meta', {'property': 'product:name'}),
-            ('title', {}),
-            ('h1', {}),
-        ]
+        title_tag = soup.find('meta', {'property': 'og:title'}) or soup.find('h1')
+        if title_tag:
+            name = title_tag.get('content') or title_tag.get_text(strip=True)
 
-        for tag, attrs in meta_name_tags:
-            element = soup.find(tag, attrs)
-            if element:
-                if tag == 'meta':
-                    product_name = element.get('content')
-                else:
-                    product_name = element.get_text(strip=True)
+        price_tag = soup.find('meta', {'property': 'product:price:amount'})
+        if price_tag:
+            price = self._parse_price(price_tag.get('content'))
 
-                if product_name and len(product_name) > 10:
-                    break
+        img_tag = soup.find('meta', {'property': 'og:image'})
+        if img_tag:
+            image = img_tag.get('content')
 
-        # Try common price patterns
-        price_patterns = [
-            ('meta', {'property': 'product:price:amount'}),
-            ('meta', {'property': 'og:price:amount'}),
-            ('span', {'class': 'price'}),
-            ('div', {'class': 'price'}),
-            ('span', {'itemprop': 'price'}),
-            ('div', {'itemprop': 'price'}),
-            ('span', {'class': 'product-price'}),
-            ('div', {'class': 'product-price'}),
-        ]
-
-        for tag, attrs in price_patterns:
-            element = soup.find(tag, attrs)
-            if element:
-                if tag == 'meta':
-                    price_text = element.get('content')
-                else:
-                    price_text = element.get_text(strip=True)
-
-                if price_text:
-                    price = self._parse_price(price_text)
-                    if price:
-                        break
-
-        if product_name and price:
-            return {
-                'name': product_name[:200],  # Limit length
-                'price': price,
-                'url': url,
-                'availability': 'Unknown'
-            }
-
+        if name and price:
+            return {'name': name, 'price': price, 'url': url, 'image_url': image, 'availability': 'Unknown'}
         return None
 
-    def _parse_price(self, price_text: str) -> Optional[float]:
-        """Extract numeric price from text"""
-        if not price_text:
+    def _parse_price(self, text: str) -> Optional[float]:
+        """Convert text to numeric price"""
+        if not text:
             return None
-
         try:
-            # Remove common currency symbols and whitespace
-            clean_text = re.sub(r'[₹$€£¥,\s]', '', price_text)
-
-            # Extract first numeric value (including decimals)
-            match = re.search(r'(\d+\.?\d*)', clean_text)
-            if match:
-                price = float(match.group(1))
-                # Reasonable price validation
-                if 0.01 <= price <= 1000000:  # Between 1 cent and 1M
-                    return price
-
-            return None
-
-        except (ValueError, AttributeError) as e:
-            logger.error(f"Error parsing price '{price_text}': {e}")
-            return None
-
-    def search_products(self, search_term: str, sites: List[str] = None) -> List[Dict]:
-        """
-        Search for products across multiple sites
-
-        Args:
-            search_term: What to search for
-            sites: List of sites to search (optional)
-
-        Returns:
-            List of product dictionaries
-        """
-        if sites is None:
-            sites = ['amazon', 'flipkart']
-
-        results = []
-
-        for site in sites:
-            try:
-                if site == 'amazon':
-                    search_url = f"https://www.amazon.com/s?k={search_term.replace(' ', '+')}"
-                elif site == 'flipkart':
-                    search_url = f"https://www.flipkart.com/search?q={search_term.replace(' ', '+')}"
-                else:
-                    continue  # Skip unknown sites
-
-                # This is a simplified version - full implementation would
-                # scrape search results and extract individual product URLs
-                logger.info(f"Would search {site} for '{search_term}'")
-                # results.extend(self._scrape_search_results(search_url, site))
-
-            except Exception as e:
-                logger.error(f"Error searching {site}: {e}")
-
-        return results
+            cleaned = re.sub(r"[₹$,€£¥\s]", "", text)
+            numbers = re.findall(r"\d+\.?\d*", cleaned)
+            if numbers:
+                price = float(numbers[0])
+                return price if price > 0 else None
+        except Exception as e:
+            logger.error(f"Price parse error: {text}")
+        return None
 
     def close(self):
         """Close the session"""
         self.session.close()
-
-
-# Example usage and testing
-if __name__ == "__main__":
-    scraper = ProductScraper()
-
-    # Test URLs (replace with actual product URLs)
-    test_urls = [
-        "https://www.amazon.com/dp/B08N5WRWNW",  # Example Amazon URL
-        "https://www.flipkart.com/sample-product"  # Example Flipkart URL
-    ]
-
-    for url in test_urls:
-        result = scraper.scrape_product(url)
-        if result:
-            print(f"Scraped: {result}")
-        else:
-            print(f"Failed to scrape: {url}")
-
-    scraper.close()

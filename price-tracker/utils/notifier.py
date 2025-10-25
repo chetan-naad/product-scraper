@@ -108,21 +108,27 @@ class EmailNotifier:
         """Create plain text email body"""
         old_price = product_info.get('old_price', 0)
         new_price = product_info.get('new_price', 0)
-        savings = old_price - new_price if old_price else 0
+        alert_price = product_info.get('alert_price', 0)
+        
+        # Calculate savings from alert price (target savings)
+        alert_savings = alert_price - new_price if alert_price > 0 else 0
+        alert_savings_pct = (alert_savings / alert_price) * 100 if alert_price > 0 else 0
+        
+        # Calculate price change from previous price
+        price_change_savings = old_price - new_price if old_price else 0
 
         body = f"""
 🔔 Price Alert for {product_info['name']}!
 
-The price has changed:
-💰 New Price: ₹{new_price:.2f}
-📊 Old Price: ₹{old_price:.2f}
-💵 You Save: ₹{savings:.2f}
+💰 CURRENT PRICE: ₹{new_price:.2f}
+🎯 YOUR ALERT PRICE: ₹{alert_price:.2f}
+💵 YOU SAVE: ₹{alert_savings:.2f} ({alert_savings_pct:.1f}% OFF!)
 """
 
-        if product_info.get('price_change'):
-            change = product_info['price_change']
-            direction = "dropped" if change < 0 else "increased"
-            body += f"📈 Price {direction} by {abs(change):.2f}%\n"
+        if old_price and old_price != new_price:
+            price_change = ((new_price - old_price) / old_price) * 100
+            direction = "dropped" if price_change < 0 else "increased"
+            body += f"📊 Previous Price: ₹{old_price:.2f} ({direction} by {abs(price_change):.1f}%)\n"
 
         body += f"""
 🛒 Site: {product_info.get('site', 'Unknown')}
@@ -139,8 +145,15 @@ Sent at: {product_info.get('timestamp', 'Unknown')}
         """Create HTML email body"""
         old_price = product_info.get('old_price', 0)
         new_price = product_info.get('new_price', 0)
-        savings = old_price - new_price if old_price else 0
-        change_color = "#28a745" if product_info.get('price_change', 0) < 0 else "#dc3545"
+        alert_price = product_info.get('alert_price', 0)
+        
+        # Calculate savings from alert price (target savings)
+        alert_savings = alert_price - new_price if alert_price > 0 else 0
+        alert_savings_pct = (alert_savings / alert_price) * 100 if alert_price > 0 else 0
+        
+        # Calculate price change from previous price
+        price_change_savings = old_price - new_price if old_price else 0
+        change_color = "#28a745" if alert_savings > 0 else "#dc3545"
 
         html = f"""
 <!DOCTYPE html>
@@ -152,9 +165,10 @@ Sent at: {product_info.get('timestamp', 'Unknown')}
         .header {{ background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 30px; text-align: center; }}
         .content {{ padding: 30px; }}
         .price-box {{ background-color: #f8f9fa; padding: 20px; border-radius: 8px; margin: 20px 0; }}
-        .price-new {{ font-size: 28px; font-weight: bold; color: {change_color}; }}
-        .price-old {{ font-size: 18px; color: #6c757d; text-decoration: line-through; }}
-        .savings {{ font-size: 20px; color: #28a745; font-weight: bold; }}
+        .price-current {{ font-size: 32px; font-weight: bold; color: #28a745; }}
+        .price-alert {{ font-size: 20px; color: #6c757d; }}
+        .savings {{ font-size: 24px; color: #28a745; font-weight: bold; }}
+        .price-old {{ font-size: 16px; color: #6c757d; text-decoration: line-through; }}
         .button {{ display: inline-block; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 12px 24px; text-decoration: none; border-radius: 5px; margin: 20px 0; }}
         .footer {{ background-color: #f8f9fa; padding: 20px; text-align: center; color: #6c757d; font-size: 12px; }}
     </style>
@@ -163,32 +177,45 @@ Sent at: {product_info.get('timestamp', 'Unknown')}
     <div class="container">
         <div class="header">
             <h1>🔔 Price Alert!</h1>
-            <p>We found a price change for your tracked product</p>
+            <p>Your tracked product is below your target price!</p>
         </div>
 
         <div class="content">
             <h2 style="color: #333; margin-bottom: 20px;">{product_info['name']}</h2>
 
             <div class="price-box">
-                <div>
-                    <span class="price-new">₹{new_price:.2f}</span>
-                    <span style="margin-left: 10px; font-size: 14px; color: #6c757d;">Current Price</span>
+                <div style="text-align: center;">
+                    <div style="margin-bottom: 15px;">
+                        <span class="price-current">₹{new_price:.2f}</span>
+                        <div style="font-size: 14px; color: #6c757d; margin-top: 5px;">CURRENT PRICE</div>
+                    </div>
+                    
+                    <div style="margin-bottom: 15px;">
+                        <span class="price-alert">₹{alert_price:.2f}</span>
+                        <div style="font-size: 14px; color: #6c757d; margin-top: 5px;">YOUR ALERT PRICE</div>
+                    </div>
+                    
+                    <div style="margin-top: 20px; padding: 15px; background-color: #d4edda; border-radius: 8px;">
+                        <span class="savings">💰 YOU SAVE ₹{alert_savings:.2f}!</span>
+                        <div style="font-size: 16px; color: #28a745; margin-top: 5px;">({alert_savings_pct:.1f}% OFF)</div>
+                    </div>
                 </div>
-
-                {f'<div style="margin-top: 10px;"><span class="price-old">₹{old_price:.2f}</span> <span style="font-size: 14px; color: #6c757d;">Previous Price</span></div>' if old_price else ''}
-
-                {f'<div style="margin-top: 15px;"><span class="savings">💰 You save ₹{savings:.2f}!</span></div>' if savings > 0 else ''}
             </div>
 """
 
-        if product_info.get('price_change'):
-            change = product_info['price_change']
-            direction = "📉 Dropped" if change < 0 else "📈 Increased"
+        if old_price and old_price != new_price:
+            price_change = ((new_price - old_price) / old_price) * 100
+            direction = "📉 Dropped" if price_change < 0 else "📈 Increased"
             html += f"""
-            <p style="font-size: 16px;">
-                <strong>Price Change:</strong> 
-                <span style="color: {change_color};">{direction} by {abs(change):.2f}%</span>
-            </p>
+            <div style="background-color: #e9ecef; padding: 15px; border-radius: 8px; margin: 20px 0;">
+                <p style="font-size: 16px; margin: 0;">
+                    <strong>Price Change:</strong> 
+                    <span style="color: {change_color};">{direction} by {abs(price_change):.1f}%</span>
+                </p>
+                <p style="font-size: 14px; color: #6c757d; margin: 5px 0 0 0;">
+                    Previous Price: <span class="price-old">₹{old_price:.2f}</span>
+                </p>
+            </div>
 """
 
         html += f"""
@@ -250,12 +277,20 @@ Sent at: {product_info.get('timestamp', 'Unknown')}
         body {{ font-family: Arial, sans-serif; margin: 0; padding: 20px; background-color: #f8f9fa; }}
         .container {{ max-width: 700px; margin: 0 auto; background-color: white; border-radius: 10px; overflow: hidden; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }}
         .header {{ background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 30px; text-align: center; }}
-        .stats {{ display: flex; justify-content: space-around; padding: 20px; background-color: #f8f9fa; }}
+        .stats {{ display: flex; justify-content: space-around; padding: 25px; background-color: #f8f9fa; }}
         .stat {{ text-align: center; }}
         .stat-number {{ font-size: 24px; font-weight: bold; color: #667eea; }}
-        .product-list {{ padding: 20px; }}
+        .product-list {{ padding: 25px; }}
         .product {{ border-bottom: 1px solid #eee; padding: 15px 0; }}
         .product:last-child {{ border-bottom: none; }}
+        .product-card {{ border: 1px solid #e9ecef; border-radius: 8px; padding: 25px; margin-bottom: 20px; background-color: #f8f9fa; }}
+        .product-header {{ display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 15px; }}
+        .product-info {{ flex: 1; }}
+        .product-metrics {{ display: flex; gap: 25px; margin-bottom: 15px; flex-wrap: wrap; }}
+        .metric {{ text-align: center; min-width: 120px; }}
+        .metric-label {{ font-size: 12px; color: #6c757d; display: block; margin-bottom: 5px; }}
+        .metric-value {{ font-weight: bold; }}
+        .view-button {{ text-align: center; margin-top: 15px; }}
     </style>
 </head>
 <body>
@@ -287,15 +322,56 @@ Sent at: {product_info.get('timestamp', 'Unknown')}
         for product in products[:10]:
             change_color = "#28a745" if product.get('price_change', 0) < 0 else "#dc3545"
             current_price = product.get('current_price', 0)
+            alert_price = product.get('alert_price', 0)
+            
+            # Calculate savings from alert price
+            alert_savings = alert_price - current_price if alert_price > 0 else 0
+            alert_savings_pct = (alert_savings / alert_price) * 100 if alert_price > 0 else 0
+            
+            # Calculate price change from previous price
+            old_price = product.get('old_price', 0)
+            price_change = product.get('price_change', 0)
+            
+            # Handle savings display - remove minus symbol and show appropriate message
+            if alert_savings > 0:
+                savings_display = f"₹{alert_savings:.2f} ({alert_savings_pct:.1f}% OFF)"
+                savings_color = "#28a745"
+                savings_label = "You Save:"
+            else:
+                savings_display = f"₹{abs(alert_savings):.2f} ({abs(alert_savings_pct):.1f}% MORE)"
+                savings_color = "#dc3545"
+                savings_label = "Price Above Target:"
+            
             html += f"""
-            <div class="product">
-                <strong>{product.get('name', 'Unknown Product')}</strong><br>
-                <span style="color: {change_color}; font-weight: bold;">₹{(current_price or 0):.2f}</span>
-                <br>
-                <small>Site: {product.get('site', 'Unknown')}</small>
+            <div class="product" style="border: 1px solid #e9ecef; border-radius: 8px; padding: 20px; margin-bottom: 20px; background-color: #f8f9fa;">
+                <h4 style="margin: 0 0 15px 0; color: #333; font-size: 16px; line-height: 1.3;">{product.get('name', 'Unknown Product')}</h4>
+                
+                <div style="display: flex; gap: 25px; margin-bottom: 15px; flex-wrap: wrap;">
+                    <div style="flex: 1; min-width: 120px;">
+                        <span style="font-size: 12px; color: #6c757d; display: block; margin-bottom: 5px;">Current Price:</span>
+                        <span style="color: {change_color}; font-weight: bold; font-size: 18px;">₹{(current_price or 0):.2f}</span>
+                    </div>
+                    <div style="flex: 1; min-width: 120px;">
+                        <span style="font-size: 12px; color: #6c757d; display: block; margin-bottom: 5px;">Alert Price:</span>
+                        <span style="color: #6c757d; font-weight: bold; font-size: 16px;">₹{(alert_price or 0):.2f}</span>
+                    </div>
+                    <div style="flex: 1; min-width: 120px;">
+                        <span style="font-size: 12px; color: #6c757d; display: block; margin-bottom: 5px;">{savings_label}</span>
+                        <span style="color: {savings_color}; font-weight: bold; font-size: 16px;">{savings_display}</span>
+                    </div>
+                </div>
+                
+                <div style="font-size: 12px; color: #6c757d; margin-bottom: 15px;">
+                    🛒 Site: {product.get('site', 'Unknown')}
+                    {f' | 📊 Price Change: {price_change:+.1f}%' if price_change != 0 else ''}
+                </div>
+                
+                <div style="text-align: center;">
+                    <a href="{product.get('url', '#')}" style="display: inline-block; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; font-size: 14px; font-weight: bold;">
+                        View Product 🛍️
+                    </a>
+                </div>
             </div>
-    
-
 """
 
         html += """
@@ -333,21 +409,33 @@ class TelegramNotifier:
 
             old_price = product_info.get('old_price', 0)
             new_price = product_info.get('new_price', 0)
-            savings = old_price - new_price if old_price else 0
+            alert_price = product_info.get('alert_price', 0)
+            
+            # Calculate savings from alert price (target savings)
+            alert_savings = alert_price - new_price if alert_price > 0 else 0
+            alert_savings_pct = (alert_savings / alert_price) * 100 if alert_price > 0 else 0
+            
+            # Handle savings display - remove minus symbol
+            if alert_savings > 0:
+                savings_display = f"₹{alert_savings:.2f} ({alert_savings_pct:.1f}% OFF!)"
+                savings_label = "YOU SAVE:"
+            else:
+                savings_display = f"₹{abs(alert_savings):.2f} ({abs(alert_savings_pct):.1f}% MORE)"
+                savings_label = "PRICE ABOVE TARGET:"
 
             message = f"""
 🔔 *Price Alert!*
 
 📦 *Product:* {product_info['name']}
-💰 *New Price:* ₹{new_price:.2f}
-📊 *Old Price:* ₹{old_price:.2f}
-💵 *You Save:* ₹{savings:.2f}
+💰 *Current Price:* ₹{new_price:.2f}
+🎯 *Your Alert Price:* ₹{alert_price:.2f}
+💵 *{savings_label}* {savings_display}
 """
 
-            if product_info.get('price_change'):
-                change = product_info['price_change']
-                emoji = "📉" if change < 0 else "📈"
-                message += f"{emoji} *Change:* {change:+.2f}%\n"
+            if old_price and old_price != new_price:
+                price_change = ((new_price - old_price) / old_price) * 100
+                emoji = "📉" if price_change < 0 else "📈"
+                message += f"{emoji} *Price Change:* {price_change:+.1f}% (Previous: ₹{old_price:.2f})\n"
 
             message += f"""
 🛒 *Site:* {product_info.get('site', 'Unknown')}

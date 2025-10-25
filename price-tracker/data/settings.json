@@ -1,10 +1,15 @@
 {
-    "email_address": "naadchetan@gmail.com",
-    "telegram_token": "",
-    "telegram_enabled": false,
-    "alert_freq": 6,
-    "price_threshold": 10,
+    "email_address": "anjaneyargantimath@gmail.com",
+    "telegram_token": "8488164470:AAFaK21_T00BFA2zj6HICl-yv5J8nkpiZ3Y/getUpdates",
+    "telegram_chat_id": "1934728827",
+    "telegram_enabled": true,
+    "alert_freq": 0,
+    "price_threshold": 0,
     "username": "chetan",
     "currency": "USD",
-    "timezone": "IST"
+    "timezone": "IST",
+    "theme": "Light Mode",
+    "full_name": "",
+    "phone": "",
+    "occupation": "Student"
 }

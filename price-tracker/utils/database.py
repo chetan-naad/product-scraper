@@ -15,6 +15,7 @@ class DatabaseManager:
     """Manages SQLite database operations for price tracking"""
 
     def __init__(self, db_path: str = "data/products.db"):
+        """Initialize database manager with path"""
         self.db_path = db_path
         # Create data directory if it doesn't exist
         os.makedirs(os.path.dirname(db_path), exist_ok=True)
@@ -22,15 +23,14 @@ class DatabaseManager:
 
     def get_connection(self):
         """Get database connection"""
-        import sqlite3
-        return sqlite3.connect(self.db_path)  # FIXED: Changed from self.db_file to self.db_path
+        return sqlite3.connect(self.db_path)
 
     def init_database(self):
         """Initialize the database with required tables"""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
 
-        # Products table
+        # Products table with currency and image_url
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS products (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -40,6 +40,8 @@ class DatabaseManager:
                 alert_price REAL,
                 category TEXT DEFAULT 'Other',
                 site TEXT,
+                currency TEXT DEFAULT 'INR',
+                image_url TEXT,
                 last_updated TIMESTAMP,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 is_active BOOLEAN DEFAULT 1
@@ -60,7 +62,7 @@ class DatabaseManager:
             )
         """)
 
-        # Users table (for multi-user support)
+        # Users table
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -89,51 +91,46 @@ class DatabaseManager:
         conn.close()
         logger.info("Database initialized successfully")
 
-    def add_product(self, name, url, alert_price, category, site):
-        """Add or reactivate a product"""
+    def add_product(self, name, url, alert_price, category, site, currency='INR', current_price=None, image_url=None):
+        """Add or reactivate a product with currency and image"""
         conn = self.get_connection()
         cursor = conn.cursor()
         
-        # 1. Check if product exists and is active
+        # Check if product exists and is active
         cursor.execute("SELECT id FROM products WHERE product_url = ? AND is_active = 1", (url,))
         if cursor.fetchone():
             conn.close()
-            return False   # Already being tracked
+            return False
 
-        # 2. Check if product exists and is inactive (deleted)
+        # Check if product exists but inactive
         cursor.execute("SELECT id FROM products WHERE product_url = ? AND is_active = 0", (url,))
         row = cursor.fetchone()
         if row:
-            # Reactivate and update details
-            cursor.execute(
-                """
+            cursor.execute("""
                 UPDATE products 
-                SET is_active = 1, product_name = ?, alert_price = ?, category = ?, site = ?, last_updated = CURRENT_TIMESTAMP 
+                SET is_active = 1, product_name = ?, alert_price = ?, category = ?, site = ?, 
+                    currency = ?, current_price = ?, image_url = ?, last_updated = CURRENT_TIMESTAMP 
                 WHERE id = ?
-                """,
-                (name, alert_price, category, site, row[0])
-            )
+            """, (name, alert_price, category, site, currency, current_price, image_url, row[0]))
             conn.commit()
             conn.close()
-            return True  # Reactivated
+            return True
 
-        # 3. Otherwise, insert as new product
-        cursor.execute(
-            "INSERT INTO products (product_name, product_url, alert_price, category, site, is_active, last_updated) VALUES (?, ?, ?, ?, ?, 1, CURRENT_TIMESTAMP)",
-            (name, url, alert_price, category, site)
-        )
+        # Insert new product
+        cursor.execute("""
+            INSERT INTO products (product_name, product_url, alert_price, category, site, currency, current_price, image_url, is_active, last_updated) 
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, CURRENT_TIMESTAMP)
+        """, (name, url, alert_price, category, site, currency, current_price, image_url))
         conn.commit()
         conn.close()
         return True
 
-    def update_price(self, url: str, new_price: float, site: str = "", 
-                    availability: str = "In Stock") -> Optional[Dict]:
-        """Update product price and return price change info"""
+    def update_price(self, url: str, new_price: float, site: str = "", availability: str = "In Stock") -> Optional[Dict]:
+        """Update product price"""
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = self.get_connection()
             cursor = conn.cursor()
 
-            # Get current product info
             cursor.execute("""
                 SELECT id, product_name, current_price, alert_price, site
                 FROM products WHERE product_url = ?
@@ -146,19 +143,16 @@ class DatabaseManager:
 
             product_id, name, old_price, alert_price, product_site = result
 
-            # Calculate price change
             price_change = None
             if old_price:
                 price_change = ((new_price - old_price) / old_price) * 100
 
-            # Update current price
             cursor.execute("""
                 UPDATE products 
                 SET current_price = ?, last_updated = ?, site = ?
                 WHERE product_url = ?
             """, (new_price, datetime.now(), site or product_site, url))
 
-            # Add to price history
             cursor.execute("""
                 INSERT INTO price_history (product_id, price, site, availability)
                 VALUES (?, ?, ?, ?)
@@ -177,7 +171,6 @@ class DatabaseManager:
                 "should_alert": new_price <= alert_price if alert_price else False,
                 "site": site or product_site
             }
-
         except Exception as e:
             logger.error(f"Error updating price: {e}")
             return None
@@ -185,12 +178,12 @@ class DatabaseManager:
     def get_all_products(self) -> List[Dict]:
         """Get all tracked products"""
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = self.get_connection()
             cursor = conn.cursor()
 
             cursor.execute("""
                 SELECT id, product_name, product_url, current_price, 
-                       alert_price, category, site, last_updated, is_active
+                       alert_price, category, site, currency, image_url, last_updated, is_active
                 FROM products
                 WHERE is_active = 1
                 ORDER BY last_updated DESC
@@ -206,22 +199,22 @@ class DatabaseManager:
                     "alert_price": row[4],
                     "category": row[5],
                     "site": row[6],
-                    "last_updated": row[7],
-                    "is_active": row[8]
+                    "currency": row[7],
+                    "image_url": row[8],
+                    "last_updated": row[9],
+                    "is_active": row[10]
                 })
 
             conn.close()
             return products
-
         except Exception as e:
             logger.error(f"Error getting products: {e}")
             return []
 
     def get_price_history(self, product_id: int, days: int = 30) -> pd.DataFrame:
-        """Get price history for a specific product"""
+        """Get price history"""
         try:
-            conn = sqlite3.connect(self.db_path)
-
+            conn = self.get_connection()
             query = """
                 SELECT timestamp, price, site, availability, discount_percentage
                 FROM price_history 
@@ -235,45 +228,38 @@ class DatabaseManager:
 
             if not df.empty:
                 df['timestamp'] = pd.to_datetime(df['timestamp'])
-
             return df
-
         except Exception as e:
             logger.error(f"Error getting price history: {e}")
             return pd.DataFrame()
 
     def get_analytics_data(self) -> Dict:
-        """Get analytics data for dashboard"""
+        """Get analytics data"""
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = self.get_connection()
             cursor = conn.cursor()
 
-            # Total products
             cursor.execute("SELECT COUNT(*) FROM products WHERE is_active = 1")
             total_products = cursor.fetchone()[0]
 
-            # Products with alerts
             cursor.execute("""
                 SELECT COUNT(*) FROM products 
                 WHERE is_active = 1 AND current_price <= alert_price AND alert_price > 0
             """)
             active_alerts = cursor.fetchone()[0]
 
-            # Average price
             cursor.execute("""
                 SELECT AVG(current_price) FROM products 
                 WHERE is_active = 1 AND current_price > 0
             """)
             avg_price = cursor.fetchone()[0] or 0
 
-            # Price changes today
             cursor.execute("""
                 SELECT COUNT(DISTINCT product_id) FROM price_history 
                 WHERE date(timestamp) = date('now')
             """)
             price_changes_today = cursor.fetchone()[0]
 
-            # Top categories
             cursor.execute("""
                 SELECT category, COUNT(*) as count 
                 FROM products 
@@ -293,112 +279,71 @@ class DatabaseManager:
                 "price_changes_today": price_changes_today,
                 "top_categories": dict(top_categories)
             }
-
         except Exception as e:
-            logger.error(f"Error getting analytics data: {e}")
+            logger.error(f"Error getting analytics: {e}")
             return {}
 
     def delete_product(self, product_id: int) -> bool:
-        """Delete a product permanently"""
+        """Delete a product"""
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = self.get_connection()
             cursor = conn.cursor()
-
-            # Hard delete (permanent)
             cursor.execute("DELETE FROM products WHERE id = ?", (product_id,))
-
             conn.commit()
             conn.close()
-            logger.info(f"Product {product_id} deleted permanently")
             return True
-
         except Exception as e:
             logger.error(f"Error deleting product: {e}")
             return False
 
     def export_to_csv(self, csv_path: str = "data/price_export.csv"):
-        """Export all data to CSV"""
+        """Export to CSV"""
         try:
-            conn = sqlite3.connect(self.db_path)
-
-            # Export products with latest prices
+            conn = self.get_connection()
             query = """
                 SELECT 
-                    p.product_name,
-                    p.product_url,
-                    p.current_price,
-                    p.alert_price,
-                    p.category,
-                    p.site,
-                    p.last_updated,
-                    CASE 
-                        WHEN p.current_price <= p.alert_price AND p.alert_price > 0 
-                        THEN 'ALERT' 
-                        ELSE 'OK' 
-                    END as status
+                    p.product_name, p.product_url, p.current_price, p.alert_price,
+                    p.category, p.site, p.last_updated,
+                    CASE WHEN p.current_price <= p.alert_price AND p.alert_price > 0 
+                    THEN 'ALERT' ELSE 'OK' END as status
                 FROM products p
                 WHERE p.is_active = 1
                 ORDER BY p.last_updated DESC
             """
-
             df = pd.read_sql_query(query, conn)
             df.to_csv(csv_path, index=False)
-
-            # Export price history
-            history_query = """
-                SELECT 
-                    p.product_name,
-                    ph.price,
-                    ph.site,
-                    ph.timestamp
-                FROM price_history ph
-                JOIN products p ON ph.product_id = p.id
-                WHERE p.is_active = 1
-                ORDER BY ph.timestamp DESC
-            """
-
-            history_df = pd.read_sql_query(history_query, conn)
-            history_csv = csv_path.replace(".csv", "_history.csv")
-            history_df.to_csv(history_csv, index=False)
-
             conn.close()
-            logger.info(f"Data exported to {csv_path} and {history_csv}")
             return True
-
         except Exception as e:
-            logger.error(f"Error exporting to CSV: {e}")
+            logger.error(f"Error exporting: {e}")
             return False
 
     def get_best_deals(self, limit: int = 10) -> List[Dict]:
-        """Get products with biggest discounts"""
+        """Get best deals from multiple sources"""
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = self.get_connection()
             cursor = conn.cursor()
-
-            query = """
+            deals = []
+            
+            # First, get deals based on price history (products with historical discounts)
+            query_history = """
                 SELECT 
-                    p.id,
-                    p.product_name,
-                    p.current_price,
-                    p.alert_price,
-                    p.site,
-                    p.category,
+                    p.id, p.product_name, p.current_price, p.alert_price,
+                    p.site, p.category,
                     MAX(ph.price) as max_price,
                     ((MAX(ph.price) - p.current_price) / MAX(ph.price) * 100) as discount_pct
                 FROM products p
                 JOIN price_history ph ON p.id = ph.product_id
                 WHERE p.is_active = 1 AND p.current_price > 0
                 GROUP BY p.id
-                HAVING discount_pct > 0
+                HAVING discount_pct > 0 AND COUNT(ph.price) > 1
                 ORDER BY discount_pct DESC
                 LIMIT ?
             """
-
-            cursor.execute(query, (limit,))
-            deals = []
-
+            cursor.execute(query_history, (limit,))
+            history_deals = []
             for row in cursor.fetchall():
-                deals.append({
+                history_deals.append({
                     "id": row[0],
                     "name": row[1],
                     "current_price": row[2],
@@ -406,12 +351,59 @@ class DatabaseManager:
                     "site": row[4],
                     "category": row[5],
                     "original_price": row[6],
-                    "discount_percent": row[7]
+                    "discount_percent": row[7],
+                    "deal_type": "historical_discount"
                 })
-
+            
+            # Second, get deals based on alert price (products below their alert price)
+            query_alert = """
+                SELECT 
+                    p.id, p.product_name, p.current_price, p.alert_price,
+                    p.site, p.category,
+                    p.current_price as original_price,
+                    ((p.alert_price - p.current_price) / p.alert_price * 100) as discount_pct
+                FROM products p
+                WHERE p.is_active = 1 AND p.current_price > 0 AND p.alert_price > 0
+                AND p.current_price < p.alert_price
+                ORDER BY discount_pct DESC
+                LIMIT ?
+            """
+            cursor.execute(query_alert, (limit,))
+            alert_deals = []
+            for row in cursor.fetchall():
+                alert_deals.append({
+                    "id": row[0],
+                    "name": row[1],
+                    "current_price": row[2],
+                    "alert_price": row[3],
+                    "site": row[4],
+                    "category": row[5],
+                    "original_price": row[6],
+                    "discount_percent": row[7],
+                    "deal_type": "below_alert"
+                })
+            
+            # Combine and deduplicate deals (prioritize historical discounts)
+            seen_ids = set()
+            
+            # Add historical deals first
+            for deal in history_deals:
+                if deal["id"] not in seen_ids:
+                    deals.append(deal)
+                    seen_ids.add(deal["id"])
+            
+            # Add alert deals if we haven't reached the limit
+            for deal in alert_deals:
+                if deal["id"] not in seen_ids and len(deals) < limit:
+                    deals.append(deal)
+                    seen_ids.add(deal["id"])
+            
+            # Sort combined deals by discount percentage
+            deals.sort(key=lambda x: x["discount_percent"], reverse=True)
+            
             conn.close()
-            return deals
-
+            return deals[:limit]
+            
         except Exception as e:
-            logger.error(f"Error getting best deals: {e}")
+            logger.error(f"Error getting deals: {e}")
             return []
